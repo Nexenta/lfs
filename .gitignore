@@ -1,0 +1,7 @@
+swift_lfs.egg-info/
+*.py[co]
+doc/build/*
+dist
+.coverage
+deb_dist
+.idea

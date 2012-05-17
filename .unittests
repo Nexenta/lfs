@@ -1,0 +1,4 @@
+#!/bin/bash
+
+nosetests test_lfs/unit --exe --with-coverage --cover-package swift_lfs --cover-erase
+rm -f .coverage
