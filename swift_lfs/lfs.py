@@ -23,6 +23,14 @@ from swift.account.server import DATADIR as ACCOUNT_DATADIR
 from swift.container.server import DATADIR as CONTAINER_DATADIR
 from swift.obj.server import DATADIR as OBJECT_DATADIR
 from swift.common.utils import get_logger
+try:
+    from swift.manifest.server import DATADIR as MANIFEST_DATADIR
+except ImportError:
+    MANIFEST_DATADIR = 'manifests'
+try:
+    from swift.chunk.server import DATADIR as CHUNK_DATADIR
+except ImportError:
+    CHUNK_DATADIR = 'chunks'
 
 from swift_lfs.fs import get_lfs, SWIFT_DEVICE_ONLINE,\
     SWIFT_DEVICE_MISCONFIGURED, SWIFT_DEVICE_DEGRADED, SWIFT_DEVICE_FAULTED
@@ -31,7 +39,17 @@ from swift_lfs.fs import get_lfs, SWIFT_DEVICE_ONLINE,\
 DATADIRS = {
     'account': ACCOUNT_DATADIR,
     'container': CONTAINER_DATADIR,
-    'object': OBJECT_DATADIR
+    'object': OBJECT_DATADIR,
+    'manifest': MANIFEST_DATADIR,
+    'chunk': CHUNK_DATADIR,
+}
+
+DEFAULT_PORT = {
+    'account': 6002,
+    'container': 6001,
+    'object': 6000,
+    'manifest': 6003,
+    'chunk': 6004,
 }
 
 
@@ -39,16 +57,18 @@ class LFSMiddleware(object):
 
     def __init__(self, app, conf):
         self.app = app
-        logger = get_logger(conf, log_route='lfs')
+        logger = get_logger(conf, log_route='swift_lfs')
         swift_dir = conf.get('swift_dir', '/etc/swift')
         storage_type = conf.get('storage_type')
         if storage_type not in DATADIRS:
             raise Exception(_('Configuration error: Requires "storage_type" '\
                               'be set to: %s; was set to "%s"' %\
-                              (', '.join(['"%s"' % i for i in DATADIRS]),
-                               storage_type)))
+                              (', '.join(DATADIRS.keys()), storage_type)))
         ring = Ring(swift_dir, ring_name=storage_type)
-        self.storage = get_lfs(conf, ring, DATADIRS[storage_type], logger)
+        self.storage = get_lfs(conf, ring, DATADIRS[storage_type],
+                               DEFAULT_PORT[storage_type], logger)
+        self.storage.setup_node()
+        print self.storage
 
     def STATUS(self, request, storage):
         """
@@ -94,9 +114,9 @@ class LFSMiddleware(object):
             res = self.STATUS(req, self.storage)
             return res(env, start_response)
         env['swift.storage'] = self.storage
+        env['swift.setup_datadir'] = self.storage.setup_datadir
+        env['swift.setup_tmp'] = self.storage.setup_tmp
         env['swift.setup_partition'] = self.storage.setup_partition
-        env['swift.setup_objdir'] = self.storage.setup_objdir
-        env['swift.setup_tmpdir'] = self.storage.setup_tmpdir
         return self.app(env, start_response)
 
 

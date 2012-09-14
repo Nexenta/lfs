@@ -28,15 +28,17 @@ SWIFT_DEVICE_DEGRADED = 3
 SWIFT_DEVICE_FAULTED = 4
 
 
-def get_lfs(conf, ring, datadir, logger):
+def get_lfs(conf, ring, datadir, default_port, logger):
     """
     Returns LFS for current node
 
     :param conf: server configuration
     :param ring: server ring file
     :param datadir: server data directory
+    :param default_port: default server port
     :param logger: server logger
     :returns : LFS storage class
+    :raises SwiftConfigurationError: if fs is invalid
     """
     fs = conf.get('fs', 'xfs')
     try:
@@ -47,7 +49,7 @@ def get_lfs(conf, ring, datadir, logger):
         if '__file__' in conf and fs in conf:
             fs_conf = readconf(conf['__file__'], fs)
             conf = dict(conf, **fs_conf)
-        return cls(conf, ring, datadir, logger)
+        return cls(conf, ring, datadir, default_port, logger)
     except ImportError, e:
         raise SwiftConfigurationError(
             _('Cannot load LFS. Invalid FS: %s. %s') % (fs, e))
@@ -56,31 +58,59 @@ def get_lfs(conf, ring, datadir, logger):
 class LFS(object):
     """Base class for all FS"""
 
-    def __init__(self, conf, ring, datadir, logger):
+    def __init__(self, conf, ring, datadir, default_port, logger):
         self.logger = logger
-        self.conf = conf
-        self.root = conf.get('devices', '/srv/node')
         self.datadir = datadir
+        self.conf = conf
+        self.root = conf.get('devices', '/srv/node/')
+        port = int(conf.get('bind_port', default_port))
         my_ips = whataremyips()
         # devices is a list of tuple (<device name>, <device mirror_copies>)
-        self.devices = [(dev['device'], dev.get('mirror_copies', 1))
-        for dev in ring.devs if dev['ip'] in my_ips]
+        self.devices = []
+        for dev in ring.devs:
+            if dev['ip'] in my_ips and dev['port'] == port:
+                mirror_copies = int(dev.get('mirror_copies', 1))
+                self.devices.append((dev['device'], mirror_copies))
         self.faulted_devices = []
         self.degraded_devices = []
         self.misconfigured_devices = []
 
-    def setup_partition(self, device, partition):
-        path = os.path.join(self.root, device, self.datadir, partition)
-        if not os.path.exists(path):
-            mkdirs(path)
-        return path
-
-    def setup_objdir(self, device, partition, name_hash):
-        """Creation of objdir is done by object server by default."""
+    def setup_node(self):
         pass
 
-    def tmp_dir(self, device, partition, name_hash):
-        return os.path.join(self.root, device, self.datadir, 'tmp')
+    def setup_datadir(self, device):
+        """
+        Setup datadir, devises/device/datadir
+
+        :param device: device
+        :returns : path to datadir
+        """
+        path = os.path.join(self.root, device, self.datadir)
+        mkdirs(path)
+        return path
+
+    def setup_tmp(self, device):
+        """
+        Setup tmp, devises/device/tmp
+
+        :param device: device
+        :returns : path to tmp
+        """
+        path = os.path.join(self.root, device, 'tmp')
+        mkdirs(path)
+        return path
+
+    def setup_partition(self, device, partition):
+        """
+        Creates partition directory, devises/device/datadir/partition
+
+        :param device: device
+        :param partition: partition
+        :returns : path to partition directory
+        """
+        path = os.path.join(self.root, device, self.datadir, partition)
+        mkdirs(path)
+        return path
 
     def get_device_status(self, devices=None):
         """
@@ -136,7 +166,7 @@ class LFSStatus(Thread):
         while True:
             if not self.faulty:
                 ret = self.check_func(self.check_args)
-                if ret != None:
+                if ret is not None:
                     # ret must be a tuple (<callback function>, <args>)
                     self.faulty = True
                     ret[0](ret[1])

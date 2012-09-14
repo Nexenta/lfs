@@ -14,62 +14,105 @@
 # limitations under the License.
 
 import os
+import sys
 
-from swift.common.utils import mkdirs, storage_directory, TRUE_VALUES
+from swift.common.utils import TRUE_VALUES
 
 from swift_lfs.fs import LFS, LFSStatus
 from swift_lfs.exceptions import LFSException
 
 try:
-    import nspyzfs
+    from nspyzfs import dataset
 except ImportError:
     raise LFSException(_("Can't import required module nspyzfs"))
-
-
-def zfs_create(pool, fs_name, mount_point):
-    """
-    Creates the ZFS filesystem with the given path.
-
-    :param pool: ZFS pool name
-    :param fs_name: ZFS file system name
-    :param mount_point: file system mount point
-    """
-    kwargs = {}
-    if mount_point:
-        kwargs['mountpoint'] = mount_point
-    nspyzfs.create_filesystems('%s/%s' % (pool, fs_name), **kwargs)
 
 
 class LFSZFS(LFS):
 
     fs = 'zfs'
 
-    def __init__(self, conf, ring, srvdir, logger):
-        super(LFSZFS, self).__init__(conf, ring, srvdir, logger)
-        self.topfs = conf.get('topfs')
-        self.check_interval = int(conf.get('check_interval', '30'))
-        mkdirs(self.root)
+    def __init__(self, conf, ring, srvdir, default_port, logger):
+        super(LFSZFS, self).__init__(conf, ring, srvdir, default_port, logger)
+        self.status_check_interval = int(conf.get('status_check_interval', 30))
+        self.top_fs = conf.get('top_fs')
+        if not self.top_fs:
+            sys.exit("ERROR: top_fs not defined")
+        if not dataset.exists_fs(self.top_fs):
+            sys.exit("ERROR: top_fs %s not exists" % self.top_fs)
+        self.device_fs_compression = conf.get('device_fs_compression', 'off')
+        self.fs_for_datadir = conf.get('fs_for_datadir', 'no') in TRUE_VALUES
+        self.datadir_compression = conf.get('datadir_compression', 'off')
+        self.fs_for_tmp = conf.get('fs_for_tmp', 'no') in TRUE_VALUES
+        self.tmp_compression = conf.get('tmp_compression', 'off')
+        self.fs_per_partition = conf.get('fs_per_partition', 'no') in \
+                                TRUE_VALUES
+        self.partition_compression = conf.get('partittion_compression', 'off')
+        #self.status_checker = LFSStatus(self.status_check_interval,
+        #                                lambda *args: None)
 
-        # Create the Top level ZFS.
-        # self.devices are list of tuple (zpool, mirror_copies)
-        for pool, mr_count in self.devices:
-            zfs_create(pool, self.topfs, '%s/%s' % (self.root, pool))
+    def _setup_fs(self, fs_name, mountpoint, compression):
+        if not dataset.exists_fs(fs_name):
+            dataset.create_fs(fs_name, True, mountpoint=mountpoint,
+                              canmount='on', compression=compression)
 
-        if not self.topfs:
-            raise LFSException(_("Cannot locate ZFS filesystem for the " \
-                                 "Server. Exiting.."))
+        if dataset.get(fs_name, 'mountpoint') != mountpoint:
+            dataset.set(fs_name, 'mountpoint', mountpoint)
 
-        self.fs_per_part = False
-        self.fs_per_obj = False
-        if self.conf.get('fs_per_obj', 'false') in TRUE_VALUES:
-            self.fs_per_part = True
-            self.fs_per_obj = True
-        elif self.conf.get('fs_per_part', 'false') in TRUE_VALUES:
-            self.fs_per_part = True
+        if dataset.get(fs_name, 'mounted') != 'yes':
+            # TODO: try to mount
+            sys.exit("ERROR: Cannot mount %s" % fs_name)
 
-        self.status_checker = LFSStatus(self.check_interval,
-            self.check_pools, ())
-        self.status_checker.start()
+        if dataset.get(fs_name, 'compression') != compression:
+            dataset.set(fs_name, 'compression', compression)
+
+    def device_fs_name(self, device):
+        """ Returns fs name for device """
+        return self.top_fs.rstrip('/') + '/' + device
+
+    def setup_node(self):
+        """ Creates filesystem for each device from node ring """
+        for device, _junk in self.devices:
+
+            # Setup fs for device
+            device_fs = self.device_fs_name(device)
+            mountpoint = os.path.join(self.root, device)
+            self._setup_fs(device_fs, mountpoint, self.device_fs_compression)
+
+            # Setup fs for datadir
+            if self.fs_for_datadir:
+                datadir_fs = self.device_fs_name(device) + '/' + self.datadir
+                mountpoint = os.path.join(self.root, device, self.datadir)
+                self._setup_fs(datadir_fs, mountpoint,
+                               self.datadir_compression)
+
+            # Setup fs for tmp
+            if self.fs_for_tmp:
+                tmp_fs = self.device_fs_name(device) + '/tmp'
+                mountpoint = os.path.join(self.root, device, 'tmp')
+                self._setup_fs(tmp_fs, mountpoint, self.tmp_compression)
+
+        #self.status_checker.start()
+
+    def setup_partition(self, device, partition):
+        """
+        Setup partition directory, devices/device/datadir/partition, if
+        fs_per_partition enabled create and setup partition file system
+
+        :param device: device
+        :param partition: partition
+        :returns : path to partition directory
+        """
+        if not self.fs_per_partition:
+            return super(LFSZFS, self).setup_partition(device, partition)
+        if not self.fs_for_datadir:
+            partition_fs = '%s/%s' % (self.device_fs_name(device), partition)
+        else:
+            partition_fs = '%s/%s/%s' % (self.device_fs_name(device),
+                                         self.datadir, partition)
+        path = os.path.join(self.root, device, self.datadir, partition)
+        if not dataset.exists_fs(partition_fs):
+            self._setup_fs(partition_fs, path, self.partition_compression)
+        return path
 
     def check_pools(self, args):
         need_cb = False
@@ -111,29 +154,3 @@ class LFSZFS(LFS):
         self.logger.warning("FAULTED pools: %s" %
                             ', '.join(self.faulted_devices))
         self.status_checker.clear_fault()
-
-    def tmp_dir(self, pool, partition, name_hash):
-        if self.fs_per_obj:
-            return os.path.join(self.root, pool,
-                storage_directory(self.srvdir, partition, name_hash), 'tmp')
-        elif self.fs_per_part:
-            return os.path.join(self.root, pool, self.srvdir, partition, 'tmp')
-        return os.path.join(self.root, pool, self.srvdir, 'tmp')
-
-    def setup_partition(self, pool, partition):
-        path = os.path.join(self.root, pool, self.srvdir, partition)
-        if not os.path.exists(path):
-            if self.fs_per_part:
-                fs = '%s/%s/%s' % (self.topfs, self.srvdir, partition)
-                zfs_create(pool, fs, path)
-            else:
-                mkdirs(path)
-        return path
-
-    def setup_objdir(self, pool, partition, name_hash):
-        path = os.path.join(self.root, pool,
-                storage_directory(self.srvdir, partition, name_hash))
-        if not os.path.exists(path) and self.fs_per_obj:
-            fs = '%s/%s/%s/%s' % (self.topfs, self.srvdir, partition,
-                                  name_hash)
-            zfs_create(pool, fs, path)
