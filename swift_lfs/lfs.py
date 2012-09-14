@@ -68,7 +68,6 @@ class LFSMiddleware(object):
         self.storage = get_lfs(conf, ring, DATADIRS[storage_type],
                                DEFAULT_PORT[storage_type], logger)
         self.storage.setup_node()
-        print self.storage
 
     def STATUS(self, request, storage):
         """
