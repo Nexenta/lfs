@@ -5,3 +5,4 @@ dist
 .coverage
 deb_dist
 .idea
+.build
