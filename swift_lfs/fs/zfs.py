@@ -22,7 +22,7 @@ from swift_lfs.fs import LFS, LFSStatus
 from swift_lfs.exceptions import LFSException
 
 try:
-    from nspyzfs import dataset
+    from nspyzfs import NSPyZFSError, dataset, pool
 except ImportError:
     raise LFSException(_("Can't import required module nspyzfs"))
 
@@ -34,6 +34,7 @@ class LFSZFS(LFS):
     def __init__(self, conf, ring, srvdir, default_port, logger):
         super(LFSZFS, self).__init__(conf, ring, srvdir, default_port, logger)
         self.status_check_interval = int(conf.get('status_check_interval', 30))
+        self.pool = conf['pool']
         self.top_fs = conf.get('top_fs')
         if not self.top_fs:
             sys.exit("ERROR: top_fs not defined")
@@ -47,8 +48,9 @@ class LFSZFS(LFS):
         self.fs_per_partition = conf.get('fs_per_partition', 'no') in \
                                 TRUE_VALUES
         self.partition_compression = conf.get('partittion_compression', 'off')
-        #self.status_checker = LFSStatus(self.status_check_interval,
-        #                                lambda *args: None)
+        self.status_checker = LFSStatus(
+            self.status_check_interval, self.logger, self.check_pools,
+            (self.pool, ))
 
     def _setup_fs(self, fs_name, mountpoint, compression):
         if not dataset.exists_fs(fs_name):
@@ -72,26 +74,22 @@ class LFSZFS(LFS):
     def setup_node(self):
         """ Creates filesystem for each device from node ring """
         for device, _junk in self.devices:
-
             # Setup fs for device
             device_fs = self.device_fs_name(device)
             mountpoint = os.path.join(self.root, device)
             self._setup_fs(device_fs, mountpoint, self.device_fs_compression)
-
             # Setup fs for datadir
             if self.fs_for_datadir:
                 datadir_fs = self.device_fs_name(device) + '/' + self.datadir
                 mountpoint = os.path.join(self.root, device, self.datadir)
                 self._setup_fs(datadir_fs, mountpoint,
                                self.datadir_compression)
-
             # Setup fs for tmp
             if self.fs_for_tmp:
                 tmp_fs = self.device_fs_name(device) + '/tmp'
                 mountpoint = os.path.join(self.root, device, 'tmp')
                 self._setup_fs(tmp_fs, mountpoint, self.tmp_compression)
-
-        #self.status_checker.start()
+        self.status_checker.start()
 
     def setup_partition(self, device, partition):
         """
@@ -114,43 +112,41 @@ class LFSZFS(LFS):
             self._setup_fs(partition_fs, path, self.partition_compression)
         return path
 
-    def check_pools(self, args):
+    def check_pools(self, pool_name):
+        try:
+            status = pool.status(pool_name)
+        except NSPyZFSError, e:
+            self.logger.exception(_("Can't get status for zfs pool %s"), e)
+            return None
         need_cb = False
-
-        for pool, mr_count in self.devices:
-            pool_config = nspyzfs.zpool_status(pool)[0]
-
-            if pool_config.get_mirrorcount() > mr_count:
-                self.misconfigured_devices.append(pool)
-            else:
-                if pool in self.misconfigured_devices:
-                    self.misconfigured_devices.remove(pool)
-
-            ret = pool_config.get_state()
-            if ret == nspyzfs.ZPOOL_STATE_DEGRADED:
-                if not pool in self.degraded_devices:
-                    self.degraded_devices.append(pool)
-                    need_cb = True
-            elif ret == nspyzfs.ZPOOL_STATE_FAULTED:
-                if not pool in self.faulted_devices:
-                    self.faulted_devices.append(pool)
-                    need_cb = True
-            elif ret == nspyzfs.ZPOOL_STATE_UNKNOWN:
-                need_cb = True
-            else:
-                if pool in self.faulted_devices:
-                    self.faulted_devices.remove(pool)
-                elif pool in self.degraded_devices:
-                    self.degraded_devices.remove(pool)
-
+        self.remove_device_from_devices(pool_name)
+        health = status['health']
+        if health == 'DEGRADED':
+            self.degraded_devices.add(pool_name)
+            need_cb = True
+        elif health in ('FAULTED', 'SPLIT'):
+            self.faulted_devices.add(pool_name)
+            need_cb = True
+        elif health == 'UNAVAIL':
+            self.unavailable_devices.add(pool_name)
+            need_cb = True
+        elif health == 'UNKNOWN':
+            need_cb = True
         if need_cb:
-            return (self.zfs_error_callback, ())
-
+            return self.error_callback, tuple()
         return None
 
-    def zfs_error_callback(self, args):
-        self.logger.warning(_("DEGARDED pools: %s") %
-                            ', '.join(self.degraded_devices))
-        self.logger.warning("FAULTED pools: %s" %
-                            ', '.join(self.faulted_devices))
+    def error_callback(self):
+        if self.degraded_devices:
+            self.logger.warning(
+                _("DEGARDED pools: %s") % ', '.join(self.degraded_devices))
+        if self.faulted_devices:
+            self.logger.warning(
+                _("FAULTED pools: %s") % ', '.join(self.faulted_devices))
+        if self.unavailable_devices:
+            self.logger.warning(_("UNAVAILABLE pools: %s") %
+                                ', '.join(self.unavailable_devices))
         self.status_checker.clear_fault()
+
+    def clear_fault(self):
+        pass

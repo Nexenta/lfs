@@ -32,8 +32,7 @@ try:
 except ImportError:
     CHUNK_DATADIR = 'chunks'
 
-from swift_lfs.fs import get_lfs, SWIFT_DEVICE_ONLINE,\
-    SWIFT_DEVICE_MISCONFIGURED, SWIFT_DEVICE_DEGRADED, SWIFT_DEVICE_FAULTED
+from swift_lfs.fs import get_lfs
 
 
 DATADIRS = {
@@ -69,9 +68,9 @@ class LFSMiddleware(object):
                                DEFAULT_PORT[storage_type], logger)
         self.storage.setup_node()
 
-    def STATUS(self, request, storage):
+    def GET(self, request, storage):
         """
-        STATUS handler
+        GET handler
 
         :param request: webob.Request object
         :param storage: LFS storage class
@@ -79,39 +78,29 @@ class LFSMiddleware(object):
         """
         devices = []
         dev_path = unquote(request.path)
-        if dev_path == '/' or not dev_path:
+        if not dev_path or dev_path == '/':
             devices = None
         else:
             devices.append(dev_path[1:])
         try:
             dev_status = storage.get_device_status(devices)
-        except Exception, err:
+        except Exception, e:
             return HTTPBadRequest(request=request, content_type='text/plain',
-                body=str(err))
+                                  body=str(e))
         if dev_status is None:
-            return HTTPNotFound(request=request)
+            return HTTPNotFound(request=request, content_type='text/plain')
         out_content = []
-        for device, params in dev_status.items():
-            stat, mirror_count = params
-            if stat == SWIFT_DEVICE_ONLINE:
-                status = 'online'
-            elif stat == SWIFT_DEVICE_MISCONFIGURED:
-                status = 'misconfigured'
-            elif stat == SWIFT_DEVICE_DEGRADED:
-                status = 'degraded'
-            elif stat == SWIFT_DEVICE_FAULTED:
-                status = 'faulted'
-            else:
-                status = 'unknown'
-            out_content.append('%s:%s:%d' % (device, status, mirror_count))
-        return Response(body='\n'.join(out_content), request=request,
-            charset='utf-8', content_type='text/plain')
+        for device, status in dev_status.items():
+            out_content.append('%s:%s' % (device, status))
+        return Response(request=request, body='\n'.join(out_content),
+                        charset='utf-8', content_type='text/plain')
 
     def __call__(self, env, start_response):
-        if env['REQUEST_METHOD'] == 'STATUS':
+        if env['REQUEST_METHOD'] == 'GET':
             req = Request(env)
-            res = self.STATUS(req, self.storage)
-            return res(env, start_response)
+            if 'status' in req.GET:
+                res = self.GET(req, self.storage)
+                return res(env, start_response)
         env['swift.storage'] = self.storage
         env['swift.setup_datadir'] = self.storage.setup_datadir
         env['swift.setup_tmp'] = self.storage.setup_tmp

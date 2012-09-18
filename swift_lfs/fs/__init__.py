@@ -22,11 +22,6 @@ from swift.common.exceptions import SwiftConfigurationError
 
 from swift_lfs.exceptions import LFSException
 
-SWIFT_DEVICE_ONLINE = 1
-SWIFT_DEVICE_MISCONFIGURED = 2
-SWIFT_DEVICE_DEGRADED = 3
-SWIFT_DEVICE_FAULTED = 4
-
 
 def get_lfs(conf, ring, datadir, default_port, logger):
     """
@@ -71,9 +66,9 @@ class LFS(object):
             if dev['ip'] in my_ips and dev['port'] == port:
                 mirror_copies = int(dev.get('mirror_copies', 1))
                 self.devices.append((dev['device'], mirror_copies))
-        self.faulted_devices = []
-        self.degraded_devices = []
-        self.misconfigured_devices = []
+        self.faulted_devices = set()
+        self.degraded_devices = set()
+        self.unavailable_devices = set()
 
     def setup_node(self):
         pass
@@ -112,6 +107,12 @@ class LFS(object):
         mkdirs(path)
         return path
 
+    def remove_device_from_devices(self, device):
+        for devices in (self.degraded_devices, self.faulted_devices,
+                        self.unavailable_devices):
+            if device in devices:
+                devices.remove(device)
+
     def get_device_status(self, devices=None):
         """
         Return statuses of devices
@@ -124,17 +125,17 @@ class LFS(object):
             raise LFSException("Devices should be a list")
         dev_statuses = {}
         if not devices:
-            devices = [dev for dev, mr_count in self.devices]
-        for dev, mr_count in self.devices:
-            status = SWIFT_DEVICE_ONLINE
-            if dev in devices:
-                if dev in self.faulted_devices:
-                    status = SWIFT_DEVICE_FAULTED
-                elif dev in self.degraded_devices:
-                    status = SWIFT_DEVICE_DEGRADED
-                elif dev in self.misconfigured_devices:
-                    status = SWIFT_DEVICE_MISCONFIGURED
-                dev_statuses[dev] = (status, mr_count)
+            devices = [self.pool]
+        for pool in devices:
+            if pool in self.faulted_devices:
+                status = 'faulted'
+            elif pool in self.degraded_devices:
+                status = 'degraded'
+            elif pool in self.unavailable_devices:
+                status = 'unavailable'
+            else:
+                status = 'online'
+            dev_statuses[pool] = status
         if not dev_statuses:
             dev_statuses = None
         return dev_statuses
@@ -149,29 +150,27 @@ class LFSStatus(Thread):
     until the fault is cleared.
 
     :param interval: interval in seconds for checking FS
-    :param check_func: method for checking FS. Takes exactly one argument
-                       which should be a tuple. Returns 0 if FS is healthy
-    :param check_args: tuple argument to check_func
+    :param logger: logger object
+    :param func: method for checking FS. Takes exactly one argument which
+                 should be a tuple. Returns 0 if FS is healthy
+    :param args: tuple arguments to check_func
     """
 
-    def __init__(self, interval, check_func, check_args):
-        Thread.__init__(self)
+    def __init__(self, interval, logger, func, args):
+        super(LFSStatus, self).__init__()
         self.interval = interval
-        self.check_func = check_func
-        self.check_args = check_args
-        self.faulty = False
+        self.func = func
+        self.args = args
+        self.logger = logger
         self.daemon = True
 
     def run(self):
         while True:
-            if not self.faulty:
-                ret = self.check_func(self.check_args)
+            try:
+                ret = self.func(*self.args)
                 if ret is not None:
                     # ret must be a tuple (<callback function>, <args>)
-                    self.faulty = True
-                    ret[0](ret[1])
+                    ret[0](*ret[1])
+            except Exception, e:
+                self.logger.exception(e)
             time.sleep(self.interval)
-
-    def clear_fault(self):
-        """Clears the fault, so that status check thread can resume."""
-        self.faulty = False
