@@ -16,8 +16,6 @@
 import os
 import sys
 
-from swift.common.utils import TRUE_VALUES
-
 from swift_lfs.fs import LFS, LFSStatus
 from swift_lfs.exceptions import LFSException
 
@@ -41,11 +39,6 @@ class LFSZFS(LFS):
         if not dataset.exists_fs(self.top_fs):
             sys.exit("ERROR: top_fs %s not exists" % self.top_fs)
         self.device_fs_compression = conf.get('device_fs_compression', 'off')
-        self.fs_for_datadir = conf.get('fs_for_datadir', 'no') in TRUE_VALUES
-        self.datadir_compression = conf.get('datadir_compression', 'off')
-        self.fs_per_partition = conf.get('fs_per_partition', 'no') in \
-                                TRUE_VALUES
-        self.partition_compression = conf.get('partittion_compression', 'off')
         self.status_checker = LFSStatus(
             self.status_check_interval, self.logger, self.check_pools,
             (self.pool, ))
@@ -76,34 +69,7 @@ class LFSZFS(LFS):
             device_fs = self.device_fs_name(device)
             mountpoint = os.path.join(self.root, device)
             self._setup_fs(device_fs, mountpoint, self.device_fs_compression)
-            # Setup fs for datadir
-            if self.fs_for_datadir:
-                datadir_fs = self.device_fs_name(device) + '/' + self.datadir
-                mountpoint = os.path.join(self.root, device, self.datadir)
-                self._setup_fs(datadir_fs, mountpoint,
-                               self.datadir_compression)
         self.status_checker.start()
-
-    def setup_partition(self, device, partition):
-        """
-        Setup partition directory, devices/device/datadir/partition, if
-        fs_per_partition enabled create and setup partition file system
-
-        :param device: device
-        :param partition: partition
-        :returns : path to partition directory
-        """
-        if not self.fs_per_partition:
-            return super(LFSZFS, self).setup_partition(device, partition)
-        if not self.fs_for_datadir:
-            partition_fs = '%s/%s' % (self.device_fs_name(device), partition)
-        else:
-            partition_fs = '%s/%s/%s' % (self.device_fs_name(device),
-                                         self.datadir, partition)
-        path = os.path.join(self.root, device, self.datadir, partition)
-        if not dataset.exists_fs(partition_fs):
-            self._setup_fs(partition_fs, path, self.partition_compression)
-        return path
 
     def check_pools(self, pool_name):
         try:
