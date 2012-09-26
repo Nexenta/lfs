@@ -43,8 +43,6 @@ class LFSZFS(LFS):
         self.device_fs_compression = conf.get('device_fs_compression', 'off')
         self.fs_for_datadir = conf.get('fs_for_datadir', 'no') in TRUE_VALUES
         self.datadir_compression = conf.get('datadir_compression', 'off')
-        self.fs_for_tmp = conf.get('fs_for_tmp', 'no') in TRUE_VALUES
-        self.tmp_compression = conf.get('tmp_compression', 'off')
         self.fs_per_partition = conf.get('fs_per_partition', 'no') in \
                                 TRUE_VALUES
         self.partition_compression = conf.get('partittion_compression', 'off')
@@ -84,11 +82,6 @@ class LFSZFS(LFS):
                 mountpoint = os.path.join(self.root, device, self.datadir)
                 self._setup_fs(datadir_fs, mountpoint,
                                self.datadir_compression)
-            # Setup fs for tmp
-            if self.fs_for_tmp:
-                tmp_fs = self.device_fs_name(device) + '/tmp'
-                mountpoint = os.path.join(self.root, device, 'tmp')
-                self._setup_fs(tmp_fs, mountpoint, self.tmp_compression)
         self.status_checker.start()
 
     def setup_partition(self, device, partition):
