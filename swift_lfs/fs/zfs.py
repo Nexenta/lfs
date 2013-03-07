@@ -34,8 +34,8 @@ class LFSZFS(LFS):
         self.status_check_interval = int(conf.get('status_check_interval', 30))
         self.compression = conf.get('compression', 'off')
 
-        self.mountpoint = os.path.join(self.devices, self.device, self.datadir)
-        self.filesystem = self.device.strip('/') + '/' + self.datadir
+        self.mountpoint = os.path.join(self.devices, self.device)
+        self.filesystem = self.device
 
         self.status_checker = LFSStatus(
             self.status_check_interval, self.logger, self.check_pools)
