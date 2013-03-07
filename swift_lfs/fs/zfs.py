@@ -32,62 +32,47 @@ class LFSZFS(LFS):
     def __init__(self, conf, ring, srvdir, default_port, logger):
         super(LFSZFS, self).__init__(conf, ring, srvdir, default_port, logger)
         self.status_check_interval = int(conf.get('status_check_interval', 30))
-        self.pool = conf['pool']
-        self.top_fs = conf.get('top_fs')
-        if not self.top_fs:
-            sys.exit("ERROR: top_fs not defined")
-        if not dataset.exists_fs(self.top_fs):
-            sys.exit("ERROR: top_fs %s not exists" % self.top_fs)
-        self.device_fs_compression = conf.get('device_fs_compression', 'off')
+        self.compression = conf.get('compression', 'off')
+
+        self.mountpoint = os.path.join(self.devices, self.device, self.datadir)
+        self.filesystem = self.device.strip('/') + '/' + self.datadir
+
         self.status_checker = LFSStatus(
-            self.status_check_interval, self.logger, self.check_pools,
-            (self.pool, ))
-
-    def _setup_fs(self, fs_name, mountpoint, compression):
-        if not dataset.exists_fs(fs_name):
-            dataset.create_fs(fs_name, True, mountpoint=mountpoint,
-                              canmount='on', compression=compression)
-
-        if dataset.get(fs_name, 'mountpoint') != mountpoint:
-            dataset.set(fs_name, 'mountpoint', mountpoint)
-
-        if dataset.get(fs_name, 'mounted') != 'yes':
-            # TODO: try to mount
-            sys.exit("ERROR: Cannot mount %s" % fs_name)
-
-        if dataset.get(fs_name, 'compression') != compression:
-            dataset.set(fs_name, 'compression', compression)
-
-    def device_fs_name(self, device):
-        """ Returns fs name for device """
-        return self.top_fs.rstrip('/') + '/' + device
+            self.status_check_interval, self.logger, self.check_pools)
 
     def setup_node(self):
-        """ Creates filesystem for each device from node ring """
-        for device, _junk in self.devices:
-            # Setup fs for device
-            device_fs = self.device_fs_name(device)
-            mountpoint = os.path.join(self.root, device)
-            self._setup_fs(device_fs, mountpoint, self.device_fs_compression)
+        """
+        Creates filesystem for service and runs device status checker thread.
+        """
+        if not dataset.exists_fs(self.filesystem):
+            dataset.create_fs(self.filesystem, True,
+                              mountpoint=self.mountpoint, canmount='on',
+                              compression=self.compression)
+        if dataset.get(self.filesystem, 'mountpoint') != self.mountpoint:
+            dataset.set(self.filesystem, 'mountpoint', self.mountpoint)
+        if dataset.get(self.filesystem, 'mounted') != 'yes':
+            sys.exit("ERROR: Cannot mount %s" % self.filesystem)
+        if dataset.get(self.filesystem, 'compression') != self.compression:
+            dataset.set(self.filesystem, 'compression', self.compression)
         self.status_checker.start()
 
-    def check_pools(self, pool_name):
+    def check_pools(self):
         try:
-            status = pool.status(pool_name)
+            status = pool.status(self.device)
         except NSPyZFSError, e:
             self.logger.exception(_("Can't get status for zfs pool %s"), e)
             return None
         need_cb = False
-        self.remove_device_from_devices(pool_name)
+        self.remove_device_from_devices(self.device)
         health = status['health']
         if health == 'DEGRADED':
-            self.degraded_devices.add(pool_name)
+            self.degraded_devices.add(self.device)
             need_cb = True
         elif health in ('FAULTED', 'SPLIT'):
-            self.faulted_devices.add(pool_name)
+            self.faulted_devices.add(self.device)
             need_cb = True
         elif health == 'UNAVAIL':
-            self.unavailable_devices.add(pool_name)
+            self.unavailable_devices.add(self.device)
             need_cb = True
         elif health == 'UNKNOWN':
             need_cb = True
@@ -103,8 +88,9 @@ class LFSZFS(LFS):
             self.logger.warning(
                 _("FAULTED pools: %s") % ', '.join(self.faulted_devices))
         if self.unavailable_devices:
-            self.logger.warning(_("UNAVAILABLE pools: %s") %
-                                ', '.join(self.unavailable_devices))
+            self.logger.warning(
+                _("UNAVAILABLE pools: %s") %
+                ', '.join(self.unavailable_devices))
         self.status_checker.clear_fault()
 
     def clear_fault(self):

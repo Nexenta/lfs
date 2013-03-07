@@ -57,15 +57,20 @@ class LFS(object):
         self.logger = logger
         self.datadir = datadir
         self.conf = conf
-        self.root = conf.get('devices', '/srv/node/')
+        self.devices = conf.get('devices', '/srv/node/')
         port = int(conf.get('bind_port', default_port))
         my_ips = whataremyips()
-        # devices is a list of tuple (<device name>, <device mirror_copies>)
-        self.devices = []
+        # device is a tuple (<device name>, <device mirror_copies>)
+        self.device = None
+        self.device_mirror_copies = 1
         for dev in ring.devs:
             if dev['ip'] in my_ips and dev['port'] == port:
-                mirror_copies = int(dev.get('mirror_copies', 1))
-                self.devices.append((dev['device'], mirror_copies))
+                self.device_mirror_copies = int(dev.get('mirror_copies', 1))
+                self.device = dev['device']
+                break
+        if not self.device:
+            raise SwiftConfigurationError(
+                _("Can\'t find device for this daemon"))
         self.faulted_devices = set()
         self.degraded_devices = set()
         self.unavailable_devices = set()
@@ -73,37 +78,35 @@ class LFS(object):
     def setup_node(self):
         pass
 
-    def setup_datadir(self, device):
+    def setup_datadir(self):
         """
         Setup datadir, devises/device/datadir
 
-        :param device: device
-        :returns : path to datadir
+        :returns: path to datadir
         """
-        path = os.path.join(self.root, device, self.datadir)
+        path = os.path.join(self.devices, self.device, self.datadir)
         mkdirs(path)
         return path
 
-    def setup_tmp(self, device):
+    def setup_tmp(self):
         """
         Setup tmp, devises/device/tmp
 
-        :param device: device
-        :returns : path to tmp
+        :returns: path to tmp
         """
-        path = os.path.join(self.root, device, 'tmp')
+        path = os.path.join(self.devices, self.device, 'tmp')
         mkdirs(path)
         return path
 
-    def setup_partition(self, device, partition):
+    def setup_partition(self, partition):
         """
         Creates partition directory, devises/device/datadir/partition
 
         :param device: device
         :param partition: partition
-        :returns : path to partition directory
+        :returns: path to partition directory
         """
-        path = os.path.join(self.root, device, self.datadir, partition)
+        path = os.path.join(self.devices, self.device, self.datadir, partition)
         mkdirs(path)
         return path
 
@@ -118,24 +121,24 @@ class LFS(object):
         Return statuses of devices
 
         :param devices: list of devices
-        :returns : dict ({ <device name> : (<device status>, <mirror_count>})
-                   with device statuses or None if there is not any device
+        :returns: dict ({ <device name> : (<device status>, <mirror_count>})
+                  with device statuses or None if there is not any device
         """
         if devices and not isinstance(devices, list):
             raise LFSException("Devices should be a list")
         dev_statuses = {}
         if not devices:
-            devices = [self.pool]
-        for pool in devices:
-            if pool in self.faulted_devices:
+            devices = [self.device]
+        for device in devices:
+            if device in self.faulted_devices:
                 status = 'faulted'
-            elif pool in self.degraded_devices:
+            elif device in self.degraded_devices:
                 status = 'degraded'
-            elif pool in self.unavailable_devices:
+            elif device in self.unavailable_devices:
                 status = 'unavailable'
             else:
                 status = 'online'
-            dev_statuses[pool] = status
+            dev_statuses[device] = status
         if not dev_statuses:
             dev_statuses = None
         return dev_statuses
@@ -156,7 +159,7 @@ class LFSStatus(Thread):
     :param args: tuple arguments to check_func
     """
 
-    def __init__(self, interval, logger, func, args):
+    def __init__(self, interval, logger, func, args=tuple()):
         super(LFSStatus, self).__init__()
         self.interval = interval
         self.func = func

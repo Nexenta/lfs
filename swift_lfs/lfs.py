@@ -40,7 +40,7 @@ DATADIRS = {
     'container': CONTAINER_DATADIR,
     'object': OBJECT_DATADIR,
     'manifest': MANIFEST_DATADIR,
-    'chunk': CHUNK_DATADIR,
+    'chunk': CHUNK_DATADIR
 }
 
 DEFAULT_PORT = {
@@ -48,7 +48,7 @@ DEFAULT_PORT = {
     'container': 6001,
     'object': 6000,
     'manifest': 6003,
-    'chunk': 6004,
+    'chunk': 6004
 }
 
 
@@ -60,9 +60,10 @@ class LFSMiddleware(object):
         swift_dir = conf.get('swift_dir', '/etc/swift')
         storage_type = conf.get('storage_type')
         if storage_type not in DATADIRS:
-            raise Exception(_('Configuration error: Requires "storage_type" '\
-                              'be set to: %s; was set to "%s"' %\
-                              (', '.join(DATADIRS.keys()), storage_type)))
+            raise Exception(
+                _('Configuration error: Requires "storage_type" be set to: '
+                  '%s; was set to "%s"' %
+                  (', '.join(DATADIRS.keys()), storage_type)))
         ring = Ring(swift_dir, ring_name=storage_type)
         self.storage = get_lfs(conf, ring, DATADIRS[storage_type],
                                DEFAULT_PORT[storage_type], logger)
