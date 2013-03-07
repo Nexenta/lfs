@@ -1,3 +1,7 @@
+swift_lfs (1.0.2)
+
+  - replace threading with eventlet for status checker
+
 swift_lfs (1.0.1)
 
   - remove pool and top_fs configuration parameters from ZFS filesystem class

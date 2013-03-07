@@ -16,6 +16,8 @@
 import os
 import sys
 
+import eventlet
+
 from swift_lfs.fs import LFS, LFSStatus
 from swift_lfs.exceptions import LFSException
 
@@ -38,7 +40,7 @@ class LFSZFS(LFS):
         self.filesystem = self.device
 
         self.status_checker = LFSStatus(
-            self.status_check_interval, self.logger, self.check_pools)
+            self.status_check_interval, self.logger, self.check_device)
 
     def setup_node(self):
         """
@@ -54,9 +56,9 @@ class LFSZFS(LFS):
             sys.exit("ERROR: Cannot mount %s" % self.filesystem)
         if dataset.get(self.filesystem, 'compression') != self.compression:
             dataset.set(self.filesystem, 'compression', self.compression)
-        self.status_checker.start()
+        eventlet.spawn(self.status_checker)
 
-    def check_pools(self):
+    def check_device(self):
         try:
             status = pool.status(self.device)
         except NSPyZFSError, e:
@@ -91,7 +93,3 @@ class LFSZFS(LFS):
             self.logger.warning(
                 _("UNAVAILABLE pools: %s") %
                 ', '.join(self.unavailable_devices))
-        self.status_checker.clear_fault()
-
-    def clear_fault(self):
-        pass

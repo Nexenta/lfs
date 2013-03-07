@@ -14,8 +14,8 @@
 # limitations under the License.
 
 import os
-import time
-from threading import Thread
+
+import eventlet
 
 from swift.common.utils import readconf, mkdirs, whataremyips
 from swift.common.exceptions import SwiftConfigurationError
@@ -102,7 +102,6 @@ class LFS(object):
         """
         Creates partition directory, devises/device/datadir/partition
 
-        :param device: device
         :param partition: partition
         :returns: path to partition directory
         """
@@ -144,7 +143,7 @@ class LFS(object):
         return dev_statuses
 
 
-class LFSStatus(Thread):
+class LFSStatus(object):
     """
     Status Checker thread which checks the status of filesystem and calls back
     to LFS if it sees any issues.
@@ -156,24 +155,21 @@ class LFSStatus(Thread):
     :param logger: logger object
     :param func: method for checking FS. Takes exactly one argument which
                  should be a tuple. Returns 0 if FS is healthy
-    :param args: tuple arguments to check_func
     """
 
-    def __init__(self, interval, logger, func, args=tuple()):
-        super(LFSStatus, self).__init__()
+    def __init__(self, interval, logger, func):
         self.interval = interval
         self.func = func
-        self.args = args
         self.logger = logger
         self.daemon = True
 
-    def run(self):
+    def __call__(self):
         while True:
             try:
-                ret = self.func(*self.args)
+                ret = self.func()
                 if ret is not None:
                     # ret must be a tuple (<callback function>, <args>)
                     ret[0](*ret[1])
-            except Exception, e:
-                self.logger.exception(e)
-            time.sleep(self.interval)
+            except Exception:
+                self.logger.exception(_('Unhandled status checker thread'))
+            eventlet.sleep(self.interval)
