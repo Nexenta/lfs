@@ -15,8 +15,7 @@
 
 from urllib import unquote
 
-from webob import Request, Response
-from webob.exc import HTTPBadRequest, HTTPNotFound
+from swift.common.swob import Request, Response, HTTPBadRequest, HTTPNotFound
 
 from swift.common.ring import Ring
 from swift.account.server import DATADIR as ACCOUNT_DATADIR
